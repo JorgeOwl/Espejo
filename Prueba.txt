@@ -1,0 +1,418 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve
+import xgboost as xgb
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+class MuleAccountDetector:
+    """
+    Detector de cuentas mulas basado en análisis de patrones transaccionales
+    """
+    
+    def __init__(self, df):
+        """
+        Inicializa el detector con el DataFrame de transacciones
+        """
+        self.df = df.copy()
+        self.features_df = None
+        self.scaler = StandardScaler()
+        
+    def prepare_dates(self):
+        """
+        Convierte columnas de fecha a datetime
+        """
+        date_columns = ['FCH_OPERACION', 'FCH_CONTABLE', 'FCH_MOV', 
+                       'FCH_FORMAL', 'FCH_VENC', 'FCH_CANCEL_CONTR',
+                       'FCH_NACIM', 'FCH_ALTA_REG', 'FCH_CORTE_DATOS']
+        
+        for col in date_columns:
+            if col in self.df.columns:
+                self.df[col] = pd.to_datetime(self.df[col], errors='coerce')
+        
+        # Extraer hora de operación
+        self.df['HORA_NUM'] = pd.to_datetime(self.df['HORA_OPERACION'], 
+                                            format='%H:%M:%S', errors='coerce').dt.hour
+        
+    def create_transactional_features(self):
+        """
+        Crea características basadas en patrones transaccionales
+        """
+        features = []
+        
+        for cuenta in self.df['NUM_CTA'].unique():
+            cuenta_data = self.df[self.df['NUM_CTA'] == cuenta].copy()
+            
+            feature_dict = {
+                'NUM_CTA': cuenta,
+                'COD_PER': cuenta_data['COD_PER'].iloc[0],
+                
+                # Volumen y frecuencia
+                'total_transacciones': len(cuenta_data),
+                'promedio_diario_trans': len(cuenta_data) / max(1, cuenta_data['FCH_OPERACION'].nunique()),
+                
+                # Montos
+                'monto_total': cuenta_data['IMP_MOV_MO'].sum(),
+                'monto_promedio': cuenta_data['IMP_MOV_MO'].mean(),
+                'monto_std': cuenta_data['IMP_MOV_MO'].std(),
+                'monto_max': cuenta_data['IMP_MOV_MO'].max(),
+                'monto_min': cuenta_data['IMP_MOV_MO'].min(),
+                
+                # Análisis de cargos y abonos
+                'num_cargos': (cuenta_data['COD_CARGO_ABONO'] == 'C').sum(),
+                'num_abonos': (cuenta_data['COD_CARGO_ABONO'] == 'A').sum(),
+                'ratio_cargo_abono': (cuenta_data['COD_CARGO_ABONO'] == 'C').sum() / max(1, (cuenta_data['COD_CARGO_ABONO'] == 'A').sum()),
+                
+                # Montos por tipo
+                'monto_cargos': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'C']['IMP_MOV_MO'].sum(),
+                'monto_abonos': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'A']['IMP_MOV_MO'].sum(),
+                
+                # Velocidad de circulación (entrada-salida rápida)
+                'balance_neto': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'A']['IMP_MOV_MO'].sum() - 
+                               cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'C']['IMP_MOV_MO'].sum(),
+                
+                # Análisis de saldos
+                'saldo_promedio': cuenta_data['IMP_SALDO_ML'].mean(),
+                'saldo_min': cuenta_data['IMP_SALDO_ML'].min(),
+                'veces_saldo_cero': (cuenta_data['IMP_SALDO_ML'] <= 10).sum(),
+                
+                # Patrones temporales
+                'dias_activos': cuenta_data['FCH_OPERACION'].nunique(),
+                'hora_promedio': cuenta_data['HORA_NUM'].mean() if 'HORA_NUM' in cuenta_data.columns else 12,
+                'transacciones_nocturnas': ((cuenta_data['HORA_NUM'] >= 22) | (cuenta_data['HORA_NUM'] <= 6)).sum() if 'HORA_NUM' in cuenta_data.columns else 0,
+                'transacciones_fin_semana': cuenta_data[cuenta_data['FCH_OPERACION'].dt.dayofweek.isin([5,6])].shape[0] if pd.api.types.is_datetime64_any_dtype(cuenta_data['FCH_OPERACION']) else 0,
+                
+                # Diversidad de operaciones
+                'tipos_operacion_unicos': cuenta_data['COD_OPERACION'].nunique(),
+                'canales_unicos': cuenta_data['COD_CANAL_OPERACION'].nunique(),
+                'centros_unicos': cuenta_data['COD_CENTRO_ALTA'].nunique(),
+                
+                # Fragmentación de montos (posible structuring)
+                'transacciones_9900_10000': ((cuenta_data['IMP_MOV_MO'] >= 9900) & (cuenta_data['IMP_MOV_MO'] <= 10000)).sum(),
+                'transacciones_fragmentadas': ((cuenta_data['IMP_MOV_MO'] >= 9000) & (cuenta_data['IMP_MOV_MO'] <= 10000)).sum(),
+                
+                # Información del cliente
+                'EDAD': cuenta_data['EDAD'].iloc[0],
+                'COD_SEXO_PER': cuenta_data['COD_SEXO_PER'].iloc[0],
+                'COD_TIPO_PER': cuenta_data['COD_TIPO_PER'].iloc[0],
+                'IMP_NOMINA_RECIBIDA': cuenta_data['IMP_NOMINA_RECIBIDA'].iloc[0],
+                
+                # Flags de riesgo existentes
+                'FLG_RETIROS_EFECTIVO_TDC': cuenta_data['FLG_RETIROS_EFECTIVO_TDC'].iloc[0],
+                'FLG_SOBREGIRO_TDC': cuenta_data['FLG_SOBREGIRO_TDC'].iloc[0],
+                'FLG_REPORTE_FRAUDE': cuenta_data['FLG_REPORTE_FRAUDE'].iloc[0],
+                'FLG_EDAD_VULNERABLE': cuenta_data['FLG_EDAD_VULNERABLE'].iloc[0],
+                'FLG_ABUSO_FINANCIERO': cuenta_data['FLG_ABUSO_FINANCIERO'].iloc[0]
+            }
+            
+            # Calcular métricas de velocidad si hay suficientes transacciones
+            if len(cuenta_data) > 1:
+                cuenta_data_sorted = cuenta_data.sort_values('FCH_OPERACION')
+                
+                # Tiempo entre transacciones
+                if pd.api.types.is_datetime64_any_dtype(cuenta_data_sorted['FCH_OPERACION']):
+                    time_diffs = cuenta_data_sorted['FCH_OPERACION'].diff().dt.total_seconds() / 3600  # en horas
+                    feature_dict['tiempo_promedio_entre_trans'] = time_diffs.mean()
+                    feature_dict['tiempo_min_entre_trans'] = time_diffs.min()
+                
+                # Detectar patrones de vaciado rápido (depósito seguido de retiro)
+                vaciados_rapidos = 0
+                for i in range(len(cuenta_data_sorted) - 1):
+                    if (cuenta_data_sorted.iloc[i]['COD_CARGO_ABONO'] == 'A' and 
+                        cuenta_data_sorted.iloc[i+1]['COD_CARGO_ABONO'] == 'C'):
+                        if pd.api.types.is_datetime64_any_dtype(cuenta_data_sorted['FCH_OPERACION']):
+                            tiempo_diff = (cuenta_data_sorted.iloc[i+1]['FCH_OPERACION'] - 
+                                         cuenta_data_sorted.iloc[i]['FCH_OPERACION']).total_seconds() / 3600
+                            if tiempo_diff < 24:  # menos de 24 horas
+                                vaciados_rapidos += 1
+                
+                feature_dict['vaciados_rapidos'] = vaciados_rapidos
+            
+            features.append(feature_dict)
+        
+        self.features_df = pd.DataFrame(features)
+        
+        # Rellenar NaN con valores apropiados
+        self.features_df = self.features_df.fillna(0)
+        
+        # Crear score de riesgo combinado
+        self.features_df['risk_score_base'] = (
+            self.features_df['FLG_RETIROS_EFECTIVO_TDC'] * 2 +
+            self.features_df['FLG_SOBREGIRO_TDC'] * 1.5 +
+            self.features_df['FLG_REPORTE_FRAUDE'] * 3 +
+            self.features_df['FLG_EDAD_VULNERABLE'] * 1 +
+            self.features_df['FLG_ABUSO_FINANCIERO'] * 2.5
+        )
+        
+        return self.features_df
+    
+    def create_anomaly_scores(self):
+        """
+        Crea scores de anomalía usando Isolation Forest
+        """
+        # Seleccionar características numéricas para detección de anomalías
+        numeric_features = [
+            'total_transacciones', 'promedio_diario_trans', 'monto_total',
+            'monto_promedio', 'monto_std', 'ratio_cargo_abono',
+            'balance_neto', 'saldo_promedio', 'veces_saldo_cero',
+            'dias_activos', 'transacciones_nocturnas', 'transacciones_fin_semana',
+            'tipos_operacion_unicos', 'canales_unicos', 'centros_unicos',
+            'transacciones_fragmentadas', 'vaciados_rapidos'
+        ]
+        
+        # Asegurarse de que las columnas existen
+        numeric_features = [f for f in numeric_features if f in self.features_df.columns]
+        
+        X_anomaly = self.features_df[numeric_features].fillna(0)
+        
+        # Normalizar datos
+        X_scaled = self.scaler.fit_transform(X_anomaly)
+        
+        # Aplicar Isolation Forest
+        iso_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.features_df['anomaly_score'] = iso_forest.fit_predict(X_scaled)
+        self.features_df['anomaly_score_proba'] = iso_forest.score_samples(X_scaled)
+        
+        return self.features_df
+    
+    def create_risk_indicators(self):
+        """
+        Crea indicadores específicos de riesgo de cuenta mula
+        """
+        # Indicador de circulación rápida
+        self.features_df['circulacion_rapida'] = (
+            (self.features_df['ratio_cargo_abono'] > 0.8) & 
+            (self.features_df['ratio_cargo_abono'] < 1.2) &
+            (self.features_df['balance_neto'].abs() < self.features_df['monto_total'] * 0.1)
+        ).astype(int)
+        
+        # Indicador de fragmentación
+        self.features_df['fragmentacion_sospechosa'] = (
+            self.features_df['transacciones_fragmentadas'] > 3
+        ).astype(int)
+        
+        # Indicador de actividad inusual
+        self.features_df['actividad_inusual'] = (
+            (self.features_df['transacciones_nocturnas'] > 5) |
+            (self.features_df['centros_unicos'] > 5) |
+            (self.features_df['promedio_diario_trans'] > 10)
+        ).astype(int)
+        
+        # Indicador de inconsistencia con nómina
+        self.features_df['inconsistencia_nomina'] = (
+            (self.features_df['monto_total'] > self.features_df['IMP_NOMINA_RECIBIDA'] * 3) &
+            (self.features_df['IMP_NOMINA_RECIBIDA'] > 0)
+        ).astype(int)
+        
+        # Score final de riesgo de cuenta mula
+        self.features_df['mule_risk_score'] = (
+            self.features_df['risk_score_base'] * 0.3 +
+            self.features_df['circulacion_rapida'] * 2 +
+            self.features_df['fragmentacion_sospechosa'] * 1.5 +
+            self.features_df['actividad_inusual'] * 1 +
+            self.features_df['inconsistencia_nomina'] * 1.5 +
+            self.features_df['vaciados_rapidos'] * 0.5 +
+            (self.features_df['anomaly_score'] == -1).astype(int) * 2
+        )
+        
+        # Clasificación de riesgo
+        self.features_df['risk_category'] = pd.cut(
+            self.features_df['mule_risk_score'],
+            bins=[-np.inf, 2, 4, 6, np.inf],
+            labels=['Bajo', 'Medio', 'Alto', 'Crítico']
+        )
+        
+        return self.features_df
+    
+    def train_supervised_model(self, labels=None):
+        """
+        Entrena un modelo supervisado si hay etiquetas disponibles
+        """
+        if labels is None:
+            # Si no hay etiquetas, usar el score de riesgo como proxy
+            labels = (self.features_df['mule_risk_score'] > 4).astype(int)
+        
+        # Preparar características para el modelo
+        feature_cols = [col for col in self.features_df.columns 
+                       if col not in ['NUM_CTA', 'COD_PER', 'risk_category', 'mule_risk_score']]
+        
+        X = self.features_df[feature_cols].fillna(0)
+        y = labels
+        
+        # División train-test
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+        
+        # Entrenar XGBoost
+        model = xgb.XGBClassifier(
+            n_estimators=100,
+            max_depth=6,
+            learning_rate=0.1,
+            objective='binary:logistic',
+            random_state=42
+        )
+        
+        model.fit(X_train, y_train)
+        
+        # Predicciones
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
+        
+        # Métricas
+        print("="*50)
+        print("MÉTRICAS DEL MODELO SUPERVISADO")
+        print("="*50)
+        print("\nMatriz de Confusión:")
+        print(confusion_matrix(y_test, y_pred))
+        print("\nReporte de Clasificación:")
+        print(classification_report(y_test, y_pred))
+        print(f"\nROC-AUC Score: {roc_auc_score(y_test, y_pred_proba):.4f}")
+        
+        # Feature importance
+        feature_importance = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False).head(15)
+        
+        print("\n" + "="*50)
+        print("TOP 15 CARACTERÍSTICAS MÁS IMPORTANTES")
+        print("="*50)
+        for idx, row in feature_importance.iterrows():
+            print(f"{row['feature']}: {row['importance']:.4f}")
+        
+        # Agregar predicciones al dataframe
+        self.features_df['modelo_proba'] = model.predict_proba(X)[:, 1]
+        self.features_df['modelo_pred'] = model.predict(X)
+        
+        return model, feature_importance
+    
+    def generate_alerts(self, threshold=6):
+        """
+        Genera alertas para cuentas de alto riesgo
+        """
+        high_risk = self.features_df[self.features_df['mule_risk_score'] > threshold].copy()
+        
+        print("\n" + "="*50)
+        print(f"ALERTAS DE CUENTAS DE ALTO RIESGO (Score > {threshold})")
+        print("="*50)
+        print(f"\nTotal de cuentas en alerta: {len(high_risk)}")
+        print(f"Porcentaje del total: {len(high_risk)/len(self.features_df)*100:.2f}%")
+        
+        if len(high_risk) > 0:
+            print("\nTop 10 cuentas de mayor riesgo:")
+            print("-"*50)
+            
+            top_risk = high_risk.nlargest(10, 'mule_risk_score')[
+                ['NUM_CTA', 'mule_risk_score', 'risk_category', 
+                 'total_transacciones', 'monto_total', 'vaciados_rapidos',
+                 'circulacion_rapida', 'fragmentacion_sospechosa']
+            ]
+            
+            for idx, row in top_risk.iterrows():
+                print(f"\nCuenta: {row['NUM_CTA']}")
+                print(f"  Score de Riesgo: {row['mule_risk_score']:.2f}")
+                print(f"  Categoría: {row['risk_category']}")
+                print(f"  Total Transacciones: {row['total_transacciones']}")
+                print(f"  Monto Total: ${row['monto_total']:,.2f}")
+                print(f"  Vaciados Rápidos: {row['vaciados_rapidos']}")
+                print(f"  Indicadores activos:")
+                if row['circulacion_rapida']:
+                    print("    - Circulación rápida de fondos")
+                if row['fragmentacion_sospechosa']:
+                    print("    - Fragmentación sospechosa de montos")
+        
+        return high_risk
+    
+    def export_results(self, filename='mule_detection_results.csv'):
+        """
+        Exporta los resultados del análisis
+        """
+        output_df = self.features_df[[
+            'NUM_CTA', 'COD_PER', 'mule_risk_score', 'risk_category',
+            'anomaly_score', 'total_transacciones', 'monto_total',
+            'ratio_cargo_abono', 'vaciados_rapidos', 'circulacion_rapida',
+            'fragmentacion_sospechosa', 'actividad_inusual',
+            'FLG_REPORTE_FRAUDE', 'FLG_ABUSO_FINANCIERO'
+        ]].sort_values('mule_risk_score', ascending=False)
+        
+        output_df.to_csv(filename, index=False)
+        print(f"\nResultados exportados a: {filename}")
+        
+        return output_df
+
+# =====================================================
+# EJEMPLO DE USO
+# =====================================================
+
+def run_mule_detection(df):
+    """
+    Función principal para ejecutar el pipeline completo de detección
+    """
+    print("="*60)
+    print(" SISTEMA DE DETECCIÓN DE CUENTAS MULAS ")
+    print("="*60)
+    
+    # Inicializar detector
+    detector = MuleAccountDetector(df)
+    
+    print("\n[1/6] Preparando fechas...")
+    detector.prepare_dates()
+    
+    print("[2/6] Creando características transaccionales...")
+    detector.create_transactional_features()
+    
+    print("[3/6] Calculando scores de anomalía...")
+    detector.create_anomaly_scores()
+    
+    print("[4/6] Generando indicadores de riesgo...")
+    detector.create_risk_indicators()
+    
+    print("[5/6] Entrenando modelo supervisado...")
+    model, importance = detector.train_supervised_model()
+    
+    print("\n[6/6] Generando alertas...")
+    high_risk_accounts = detector.generate_alerts(threshold=5)
+    
+    # Exportar resultados
+    results = detector.export_results()
+    
+    # Resumen estadístico
+    print("\n" + "="*50)
+    print("RESUMEN ESTADÍSTICO")
+    print("="*50)
+    print(f"Total de cuentas analizadas: {len(detector.features_df)}")
+    print(f"Distribución por categoría de riesgo:")
+    print(detector.features_df['risk_category'].value_counts())
+    
+    print("\nEstadísticas de indicadores:")
+    print(f"  Cuentas con circulación rápida: {detector.features_df['circulacion_rapida'].sum()}")
+    print(f"  Cuentas con fragmentación sospechosa: {detector.features_df['fragmentacion_sospechosa'].sum()}")
+    print(f"  Cuentas con actividad inusual: {detector.features_df['actividad_inusual'].sum()}")
+    print(f"  Cuentas con anomalías detectadas: {(detector.features_df['anomaly_score'] == -1).sum()}")
+    
+    return detector, results
+
+# =====================================================
+# CÓDIGO PARA EJECUTAR
+# =====================================================
+
+# Para usar este código:
+# 1. Cargar tu dataset
+# df = pd.read_csv('tu_archivo.csv')
+
+# 2. Ejecutar el pipeline
+# detector, results = run_mule_detection(df)
+
+# 3. Acceder a los resultados
+# cuentas_alto_riesgo = results[results['risk_category'] == 'Crítico']
+
+# 4. Para predecir nuevas cuentas:
+# nuevas_predicciones = detector.features_df[['NUM_CTA', 'modelo_proba', 'mule_risk_score']]
+
+print("\nSistema de detección de cuentas mulas preparado.")
+print("Para ejecutar, usa: detector, results = run_mule_detection(tu_dataframe)")
