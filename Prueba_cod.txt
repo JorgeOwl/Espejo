@@ -1,0 +1,418 @@
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve
+import xgboost as xgb
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
+
+class MuleAccountDetector:
+(owl)"""
+(owl)Detector de cuentas mulas basado en análisis de patrones transaccionales
+(owl)"""
+(owl)
+(owl)def __init__(self, df):
+(owl)(owl)"""
+(owl)(owl)Inicializa el detector con el DataFrame de transacciones
+(owl)(owl)"""
+(owl)(owl)self.df = df.copy()
+(owl)(owl)self.features_df = None
+(owl)(owl)self.scaler = StandardScaler()
+(owl)(owl)
+(owl)def prepare_dates(self):
+(owl)(owl)"""
+(owl)(owl)Convierte columnas de fecha a datetime
+(owl)(owl)"""
+(owl)(owl)date_columns = ['FCH_OPERACION', 'FCH_CONTABLE', 'FCH_MOV', 
+(owl)(owl)(owl)(owl)(owl)   'FCH_FORMAL', 'FCH_VENC', 'FCH_CANCEL_CONTR',
+(owl)(owl)(owl)(owl)(owl)   'FCH_NACIM', 'FCH_ALTA_REG', 'FCH_CORTE_DATOS']
+(owl)(owl)
+(owl)(owl)for col in date_columns:
+(owl)(owl)(owl)if col in self.df.columns:
+(owl)(owl)(owl)(owl)self.df[col] = pd.to_datetime(self.df[col], errors='coerce')
+(owl)(owl)
+(owl)(owl)# Extraer hora de operación
+(owl)(owl)self.df['HORA_NUM'] = pd.to_datetime(self.df['HORA_OPERACION'], 
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)format='%H:%M:%S', errors='coerce').dt.hour
+(owl)(owl)
+(owl)def create_transactional_features(self):
+(owl)(owl)"""
+(owl)(owl)Crea características basadas en patrones transaccionales
+(owl)(owl)"""
+(owl)(owl)features = []
+(owl)(owl)
+(owl)(owl)for cuenta in self.df['NUM_CTA'].unique():
+(owl)(owl)(owl)cuenta_data = self.df[self.df['NUM_CTA'] == cuenta].copy()
+(owl)(owl)(owl)
+(owl)(owl)(owl)feature_dict = {
+(owl)(owl)(owl)(owl)'NUM_CTA': cuenta,
+(owl)(owl)(owl)(owl)'COD_PER': cuenta_data['COD_PER'].iloc[0],
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Volumen y frecuencia
+(owl)(owl)(owl)(owl)'total_transacciones': len(cuenta_data),
+(owl)(owl)(owl)(owl)'promedio_diario_trans': len(cuenta_data) / max(1, cuenta_data['FCH_OPERACION'].nunique()),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Montos
+(owl)(owl)(owl)(owl)'monto_total': cuenta_data['IMP_MOV_MO'].sum(),
+(owl)(owl)(owl)(owl)'monto_promedio': cuenta_data['IMP_MOV_MO'].mean(),
+(owl)(owl)(owl)(owl)'monto_std': cuenta_data['IMP_MOV_MO'].std(),
+(owl)(owl)(owl)(owl)'monto_max': cuenta_data['IMP_MOV_MO'].max(),
+(owl)(owl)(owl)(owl)'monto_min': cuenta_data['IMP_MOV_MO'].min(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Análisis de cargos y abonos
+(owl)(owl)(owl)(owl)'num_cargos': (cuenta_data['COD_CARGO_ABONO'] == 'C').sum(),
+(owl)(owl)(owl)(owl)'num_abonos': (cuenta_data['COD_CARGO_ABONO'] == 'A').sum(),
+(owl)(owl)(owl)(owl)'ratio_cargo_abono': (cuenta_data['COD_CARGO_ABONO'] == 'C').sum() / max(1, (cuenta_data['COD_CARGO_ABONO'] == 'A').sum()),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Montos por tipo
+(owl)(owl)(owl)(owl)'monto_cargos': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'C']['IMP_MOV_MO'].sum(),
+(owl)(owl)(owl)(owl)'monto_abonos': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'A']['IMP_MOV_MO'].sum(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Velocidad de circulación (entrada-salida rápida)
+(owl)(owl)(owl)(owl)'balance_neto': cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'A']['IMP_MOV_MO'].sum() - 
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)   cuenta_data[cuenta_data['COD_CARGO_ABONO'] == 'C']['IMP_MOV_MO'].sum(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Análisis de saldos
+(owl)(owl)(owl)(owl)'saldo_promedio': cuenta_data['IMP_SALDO_ML'].mean(),
+(owl)(owl)(owl)(owl)'saldo_min': cuenta_data['IMP_SALDO_ML'].min(),
+(owl)(owl)(owl)(owl)'veces_saldo_cero': (cuenta_data['IMP_SALDO_ML'] <= 10).sum(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Patrones temporales
+(owl)(owl)(owl)(owl)'dias_activos': cuenta_data['FCH_OPERACION'].nunique(),
+(owl)(owl)(owl)(owl)'hora_promedio': cuenta_data['HORA_NUM'].mean() if 'HORA_NUM' in cuenta_data.columns else 12,
+(owl)(owl)(owl)(owl)'transacciones_nocturnas': ((cuenta_data['HORA_NUM'] >= 22) | (cuenta_data['HORA_NUM'] <= 6)).sum() if 'HORA_NUM' in cuenta_data.columns else 0,
+(owl)(owl)(owl)(owl)'transacciones_fin_semana': cuenta_data[cuenta_data['FCH_OPERACION'].dt.dayofweek.isin([5,6])].shape[0] if pd.api.types.is_datetime64_any_dtype(cuenta_data['FCH_OPERACION']) else 0,
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Diversidad de operaciones
+(owl)(owl)(owl)(owl)'tipos_operacion_unicos': cuenta_data['COD_OPERACION'].nunique(),
+(owl)(owl)(owl)(owl)'canales_unicos': cuenta_data['COD_CANAL_OPERACION'].nunique(),
+(owl)(owl)(owl)(owl)'centros_unicos': cuenta_data['COD_CENTRO_ALTA'].nunique(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Fragmentación de montos (posible structuring)
+(owl)(owl)(owl)(owl)'transacciones_9900_10000': ((cuenta_data['IMP_MOV_MO'] >= 9900) & (cuenta_data['IMP_MOV_MO'] <= 10000)).sum(),
+(owl)(owl)(owl)(owl)'transacciones_fragmentadas': ((cuenta_data['IMP_MOV_MO'] >= 9000) & (cuenta_data['IMP_MOV_MO'] <= 10000)).sum(),
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Información del cliente
+(owl)(owl)(owl)(owl)'EDAD': cuenta_data['EDAD'].iloc[0],
+(owl)(owl)(owl)(owl)'COD_SEXO_PER': cuenta_data['COD_SEXO_PER'].iloc[0],
+(owl)(owl)(owl)(owl)'COD_TIPO_PER': cuenta_data['COD_TIPO_PER'].iloc[0],
+(owl)(owl)(owl)(owl)'IMP_NOMINA_RECIBIDA': cuenta_data['IMP_NOMINA_RECIBIDA'].iloc[0],
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Flags de riesgo existentes
+(owl)(owl)(owl)(owl)'FLG_RETIROS_EFECTIVO_TDC': cuenta_data['FLG_RETIROS_EFECTIVO_TDC'].iloc[0],
+(owl)(owl)(owl)(owl)'FLG_SOBREGIRO_TDC': cuenta_data['FLG_SOBREGIRO_TDC'].iloc[0],
+(owl)(owl)(owl)(owl)'FLG_REPORTE_FRAUDE': cuenta_data['FLG_REPORTE_FRAUDE'].iloc[0],
+(owl)(owl)(owl)(owl)'FLG_EDAD_VULNERABLE': cuenta_data['FLG_EDAD_VULNERABLE'].iloc[0],
+(owl)(owl)(owl)(owl)'FLG_ABUSO_FINANCIERO': cuenta_data['FLG_ABUSO_FINANCIERO'].iloc[0]
+(owl)(owl)(owl)}
+(owl)(owl)(owl)
+(owl)(owl)(owl)# Calcular métricas de velocidad si hay suficientes transacciones
+(owl)(owl)(owl)if len(cuenta_data) > 1:
+(owl)(owl)(owl)(owl)cuenta_data_sorted = cuenta_data.sort_values('FCH_OPERACION')
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Tiempo entre transacciones
+(owl)(owl)(owl)(owl)if pd.api.types.is_datetime64_any_dtype(cuenta_data_sorted['FCH_OPERACION']):
+(owl)(owl)(owl)(owl)(owl)time_diffs = cuenta_data_sorted['FCH_OPERACION'].diff().dt.total_seconds() / 3600  # en horas
+(owl)(owl)(owl)(owl)(owl)feature_dict['tiempo_promedio_entre_trans'] = time_diffs.mean()
+(owl)(owl)(owl)(owl)(owl)feature_dict['tiempo_min_entre_trans'] = time_diffs.min()
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)# Detectar patrones de vaciado rápido (depósito seguido de retiro)
+(owl)(owl)(owl)(owl)vaciados_rapidos = 0
+(owl)(owl)(owl)(owl)for i in range(len(cuenta_data_sorted) - 1):
+(owl)(owl)(owl)(owl)(owl)if (cuenta_data_sorted.iloc[i]['COD_CARGO_ABONO'] == 'A' and 
+(owl)(owl)(owl)(owl)(owl)(owl)cuenta_data_sorted.iloc[i+1]['COD_CARGO_ABONO'] == 'C'):
+(owl)(owl)(owl)(owl)(owl)(owl)if pd.api.types.is_datetime64_any_dtype(cuenta_data_sorted['FCH_OPERACION']):
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)tiempo_diff = (cuenta_data_sorted.iloc[i+1]['FCH_OPERACION'] - 
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl) cuenta_data_sorted.iloc[i]['FCH_OPERACION']).total_seconds() / 3600
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)if tiempo_diff < 24:  # menos de 24 horas
+(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl)vaciados_rapidos += 1
+(owl)(owl)(owl)(owl)
+(owl)(owl)(owl)(owl)feature_dict['vaciados_rapidos'] = vaciados_rapidos
+(owl)(owl)(owl)
+(owl)(owl)(owl)features.append(feature_dict)
+(owl)(owl)
+(owl)(owl)self.features_df = pd.DataFrame(features)
+(owl)(owl)
+(owl)(owl)# Rellenar NaN con valores apropiados
+(owl)(owl)self.features_df = self.features_df.fillna(0)
+(owl)(owl)
+(owl)(owl)# Crear score de riesgo combinado
+(owl)(owl)self.features_df['risk_score_base'] = (
+(owl)(owl)(owl)self.features_df['FLG_RETIROS_EFECTIVO_TDC'] * 2 +
+(owl)(owl)(owl)self.features_df['FLG_SOBREGIRO_TDC'] * 1.5 +
+(owl)(owl)(owl)self.features_df['FLG_REPORTE_FRAUDE'] * 3 +
+(owl)(owl)(owl)self.features_df['FLG_EDAD_VULNERABLE'] * 1 +
+(owl)(owl)(owl)self.features_df['FLG_ABUSO_FINANCIERO'] * 2.5
+(owl)(owl))
+(owl)(owl)
+(owl)(owl)return self.features_df
+(owl)
+(owl)def create_anomaly_scores(self):
+(owl)(owl)"""
+(owl)(owl)Crea scores de anomalía usando Isolation Forest
+(owl)(owl)"""
+(owl)(owl)# Seleccionar características numéricas para detección de anomalías
+(owl)(owl)numeric_features = [
+(owl)(owl)(owl)'total_transacciones', 'promedio_diario_trans', 'monto_total',
+(owl)(owl)(owl)'monto_promedio', 'monto_std', 'ratio_cargo_abono',
+(owl)(owl)(owl)'balance_neto', 'saldo_promedio', 'veces_saldo_cero',
+(owl)(owl)(owl)'dias_activos', 'transacciones_nocturnas', 'transacciones_fin_semana',
+(owl)(owl)(owl)'tipos_operacion_unicos', 'canales_unicos', 'centros_unicos',
+(owl)(owl)(owl)'transacciones_fragmentadas', 'vaciados_rapidos'
+(owl)(owl)]
+(owl)(owl)
+(owl)(owl)# Asegurarse de que las columnas existen
+(owl)(owl)numeric_features = [f for f in numeric_features if f in self.features_df.columns]
+(owl)(owl)
+(owl)(owl)X_anomaly = self.features_df[numeric_features].fillna(0)
+(owl)(owl)
+(owl)(owl)# Normalizar datos
+(owl)(owl)X_scaled = self.scaler.fit_transform(X_anomaly)
+(owl)(owl)
+(owl)(owl)# Aplicar Isolation Forest
+(owl)(owl)iso_forest = IsolationForest(contamination=0.1, random_state=42)
+(owl)(owl)self.features_df['anomaly_score'] = iso_forest.fit_predict(X_scaled)
+(owl)(owl)self.features_df['anomaly_score_proba'] = iso_forest.score_samples(X_scaled)
+(owl)(owl)
+(owl)(owl)return self.features_df
+(owl)
+(owl)def create_risk_indicators(self):
+(owl)(owl)"""
+(owl)(owl)Crea indicadores específicos de riesgo de cuenta mula
+(owl)(owl)"""
+(owl)(owl)# Indicador de circulación rápida
+(owl)(owl)self.features_df['circulacion_rapida'] = (
+(owl)(owl)(owl)(self.features_df['ratio_cargo_abono'] > 0.8) & 
+(owl)(owl)(owl)(self.features_df['ratio_cargo_abono'] < 1.2) &
+(owl)(owl)(owl)(self.features_df['balance_neto'].abs() < self.features_df['monto_total'] * 0.1)
+(owl)(owl)).astype(int)
+(owl)(owl)
+(owl)(owl)# Indicador de fragmentación
+(owl)(owl)self.features_df['fragmentacion_sospechosa'] = (
+(owl)(owl)(owl)self.features_df['transacciones_fragmentadas'] > 3
+(owl)(owl)).astype(int)
+(owl)(owl)
+(owl)(owl)# Indicador de actividad inusual
+(owl)(owl)self.features_df['actividad_inusual'] = (
+(owl)(owl)(owl)(self.features_df['transacciones_nocturnas'] > 5) |
+(owl)(owl)(owl)(self.features_df['centros_unicos'] > 5) |
+(owl)(owl)(owl)(self.features_df['promedio_diario_trans'] > 10)
+(owl)(owl)).astype(int)
+(owl)(owl)
+(owl)(owl)# Indicador de inconsistencia con nómina
+(owl)(owl)self.features_df['inconsistencia_nomina'] = (
+(owl)(owl)(owl)(self.features_df['monto_total'] > self.features_df['IMP_NOMINA_RECIBIDA'] * 3) &
+(owl)(owl)(owl)(self.features_df['IMP_NOMINA_RECIBIDA'] > 0)
+(owl)(owl)).astype(int)
+(owl)(owl)
+(owl)(owl)# Score final de riesgo de cuenta mula
+(owl)(owl)self.features_df['mule_risk_score'] = (
+(owl)(owl)(owl)self.features_df['risk_score_base'] * 0.3 +
+(owl)(owl)(owl)self.features_df['circulacion_rapida'] * 2 +
+(owl)(owl)(owl)self.features_df['fragmentacion_sospechosa'] * 1.5 +
+(owl)(owl)(owl)self.features_df['actividad_inusual'] * 1 +
+(owl)(owl)(owl)self.features_df['inconsistencia_nomina'] * 1.5 +
+(owl)(owl)(owl)self.features_df['vaciados_rapidos'] * 0.5 +
+(owl)(owl)(owl)(self.features_df['anomaly_score'] == -1).astype(int) * 2
+(owl)(owl))
+(owl)(owl)
+(owl)(owl)# Clasificación de riesgo
+(owl)(owl)self.features_df['risk_category'] = pd.cut(
+(owl)(owl)(owl)self.features_df['mule_risk_score'],
+(owl)(owl)(owl)bins=[-np.inf, 2, 4, 6, np.inf],
+(owl)(owl)(owl)labels=['Bajo', 'Medio', 'Alto', 'Crítico']
+(owl)(owl))
+(owl)(owl)
+(owl)(owl)return self.features_df
+(owl)
+(owl)def train_supervised_model(self, labels=None):
+(owl)(owl)"""
+(owl)(owl)Entrena un modelo supervisado si hay etiquetas disponibles
+(owl)(owl)"""
+(owl)(owl)if labels is None:
+(owl)(owl)(owl)# Si no hay etiquetas, usar el score de riesgo como proxy
+(owl)(owl)(owl)labels = (self.features_df['mule_risk_score'] > 4).astype(int)
+(owl)(owl)
+(owl)(owl)# Preparar características para el modelo
+(owl)(owl)feature_cols = [col for col in self.features_df.columns 
+(owl)(owl)(owl)(owl)(owl)   if col not in ['NUM_CTA', 'COD_PER', 'risk_category', 'mule_risk_score']]
+(owl)(owl)
+(owl)(owl)X = self.features_df[feature_cols].fillna(0)
+(owl)(owl)y = labels
+(owl)(owl)
+(owl)(owl)# División train-test
+(owl)(owl)X_train, X_test, y_train, y_test = train_test_split(
+(owl)(owl)(owl)X, y, test_size=0.2, random_state=42, stratify=y
+(owl)(owl))
+(owl)(owl)
+(owl)(owl)# Entrenar XGBoost
+(owl)(owl)model = xgb.XGBClassifier(
+(owl)(owl)(owl)n_estimators=100,
+(owl)(owl)(owl)max_depth=6,
+(owl)(owl)(owl)learning_rate=0.1,
+(owl)(owl)(owl)objective='binary:logistic',
+(owl)(owl)(owl)random_state=42
+(owl)(owl))
+(owl)(owl)
+(owl)(owl)model.fit(X_train, y_train)
+(owl)(owl)
+(owl)(owl)# Predicciones
+(owl)(owl)y_pred = model.predict(X_test)
+(owl)(owl)y_pred_proba = model.predict_proba(X_test)[:, 1]
+(owl)(owl)
+(owl)(owl)# Métricas
+(owl)(owl)print("="*50)
+(owl)(owl)print("MÉTRICAS DEL MODELO SUPERVISADO")
+(owl)(owl)print("="*50)
+(owl)(owl)print("\nMatriz de Confusión:")
+(owl)(owl)print(confusion_matrix(y_test, y_pred))
+(owl)(owl)print("\nReporte de Clasificación:")
+(owl)(owl)print(classification_report(y_test, y_pred))
+(owl)(owl)print(f"\nROC-AUC Score: {roc_auc_score(y_test, y_pred_proba):.4f}")
+(owl)(owl)
+(owl)(owl)# Feature importance
+(owl)(owl)feature_importance = pd.DataFrame({
+(owl)(owl)(owl)'feature': feature_cols,
+(owl)(owl)(owl)'importance': model.feature_importances_
+(owl)(owl)}).sort_values('importance', ascending=False).head(15)
+(owl)(owl)
+(owl)(owl)print("\n" + "="*50)
+(owl)(owl)print("TOP 15 CARACTERÍSTICAS MÁS IMPORTANTES")
+(owl)(owl)print("="*50)
+(owl)(owl)for idx, row in feature_importance.iterrows():
+(owl)(owl)(owl)print(f"{row['feature']}: {row['importance']:.4f}")
+(owl)(owl)
+(owl)(owl)# Agregar predicciones al dataframe
+(owl)(owl)self.features_df['modelo_proba'] = model.predict_proba(X)[:, 1]
+(owl)(owl)self.features_df['modelo_pred'] = model.predict(X)
+(owl)(owl)
+(owl)(owl)return model, feature_importance
+(owl)
+(owl)def generate_alerts(self, threshold=6):
+(owl)(owl)"""
+(owl)(owl)Genera alertas para cuentas de alto riesgo
+(owl)(owl)"""
+(owl)(owl)high_risk = self.features_df[self.features_df['mule_risk_score'] > threshold].copy()
+(owl)(owl)
+(owl)(owl)print("\n" + "="*50)
+(owl)(owl)print(f"ALERTAS DE CUENTAS DE ALTO RIESGO (Score > {threshold})")
+(owl)(owl)print("="*50)
+(owl)(owl)print(f"\nTotal de cuentas en alerta: {len(high_risk)}")
+(owl)(owl)print(f"Porcentaje del total: {len(high_risk)/len(self.features_df)*100:.2f}%")
+(owl)(owl)
+(owl)(owl)if len(high_risk) > 0:
+(owl)(owl)(owl)print("\nTop 10 cuentas de mayor riesgo:")
+(owl)(owl)(owl)print("-"*50)
+(owl)(owl)(owl)
+(owl)(owl)(owl)top_risk = high_risk.nlargest(10, 'mule_risk_score')[
+(owl)(owl)(owl)(owl)['NUM_CTA', 'mule_risk_score', 'risk_category', 
+(owl)(owl)(owl)(owl) 'total_transacciones', 'monto_total', 'vaciados_rapidos',
+(owl)(owl)(owl)(owl) 'circulacion_rapida', 'fragmentacion_sospechosa']
+(owl)(owl)(owl)]
+(owl)(owl)(owl)
+(owl)(owl)(owl)for idx, row in top_risk.iterrows():
+(owl)(owl)(owl)(owl)print(f"\nCuenta: {row['NUM_CTA']}")
+(owl)(owl)(owl)(owl)print(f"  Score de Riesgo: {row['mule_risk_score']:.2f}")
+(owl)(owl)(owl)(owl)print(f"  Categoría: {row['risk_category']}")
+(owl)(owl)(owl)(owl)print(f"  Total Transacciones: {row['total_transacciones']}")
+(owl)(owl)(owl)(owl)print(f"  Monto Total: ${row['monto_total']:,.2f}")
+(owl)(owl)(owl)(owl)print(f"  Vaciados Rápidos: {row['vaciados_rapidos']}")
+(owl)(owl)(owl)(owl)print(f"  Indicadores activos:")
+(owl)(owl)(owl)(owl)if row['circulacion_rapida']:
+(owl)(owl)(owl)(owl)(owl)print("(owl)- Circulación rápida de fondos")
+(owl)(owl)(owl)(owl)if row['fragmentacion_sospechosa']:
+(owl)(owl)(owl)(owl)(owl)print("(owl)- Fragmentación sospechosa de montos")
+(owl)(owl)
+(owl)(owl)return high_risk
+(owl)
+(owl)def export_results(self, filename='mule_detection_results.csv'):
+(owl)(owl)"""
+(owl)(owl)Exporta los resultados del análisis
+(owl)(owl)"""
+(owl)(owl)output_df = self.features_df[[
+(owl)(owl)(owl)'NUM_CTA', 'COD_PER', 'mule_risk_score', 'risk_category',
+(owl)(owl)(owl)'anomaly_score', 'total_transacciones', 'monto_total',
+(owl)(owl)(owl)'ratio_cargo_abono', 'vaciados_rapidos', 'circulacion_rapida',
+(owl)(owl)(owl)'fragmentacion_sospechosa', 'actividad_inusual',
+(owl)(owl)(owl)'FLG_REPORTE_FRAUDE', 'FLG_ABUSO_FINANCIERO'
+(owl)(owl)]].sort_values('mule_risk_score', ascending=False)
+(owl)(owl)
+(owl)(owl)output_df.to_csv(filename, index=False)
+(owl)(owl)print(f"\nResultados exportados a: {filename}")
+(owl)(owl)
+(owl)(owl)return output_df
+
+# =====================================================
+# EJEMPLO DE USO
+# =====================================================
+
+def run_mule_detection(df):
+(owl)"""
+(owl)Función principal para ejecutar el pipeline completo de detección
+(owl)"""
+(owl)print("="*60)
+(owl)print(" SISTEMA DE DETECCIÓN DE CUENTAS MULAS ")
+(owl)print("="*60)
+(owl)
+(owl)# Inicializar detector
+(owl)detector = MuleAccountDetector(df)
+(owl)
+(owl)print("\n[1/6] Preparando fechas...")
+(owl)detector.prepare_dates()
+(owl)
+(owl)print("[2/6] Creando características transaccionales...")
+(owl)detector.create_transactional_features()
+(owl)
+(owl)print("[3/6] Calculando scores de anomalía...")
+(owl)detector.create_anomaly_scores()
+(owl)
+(owl)print("[4/6] Generando indicadores de riesgo...")
+(owl)detector.create_risk_indicators()
+(owl)
+(owl)print("[5/6] Entrenando modelo supervisado...")
+(owl)model, importance = detector.train_supervised_model()
+(owl)
+(owl)print("\n[6/6] Generando alertas...")
+(owl)high_risk_accounts = detector.generate_alerts(threshold=5)
+(owl)
+(owl)# Exportar resultados
+(owl)results = detector.export_results()
+(owl)
+(owl)# Resumen estadístico
+(owl)print("\n" + "="*50)
+(owl)print("RESUMEN ESTADÍSTICO")
+(owl)print("="*50)
+(owl)print(f"Total de cuentas analizadas: {len(detector.features_df)}")
+(owl)print(f"Distribución por categoría de riesgo:")
+(owl)print(detector.features_df['risk_category'].value_counts())
+(owl)
+(owl)print("\nEstadísticas de indicadores:")
+(owl)print(f"  Cuentas con circulación rápida: {detector.features_df['circulacion_rapida'].sum()}")
+(owl)print(f"  Cuentas con fragmentación sospechosa: {detector.features_df['fragmentacion_sospechosa'].sum()}")
+(owl)print(f"  Cuentas con actividad inusual: {detector.features_df['actividad_inusual'].sum()}")
+(owl)print(f"  Cuentas con anomalías detectadas: {(detector.features_df['anomaly_score'] == -1).sum()}")
+(owl)
+(owl)return detector, results
+
+# =====================================================
+# CÓDIGO PARA EJECUTAR
+# =====================================================
+
+# Para usar este código:
+# 1. Cargar tu dataset
+# df = pd.read_csv('tu_archivo.csv')
+
+# 2. Ejecutar el pipeline
+# detector, results = run_mule_detection(df)
+
+# 3. Acceder a los resultados
+# cuentas_alto_riesgo = results[results['risk_category'] == 'Crítico']
+
+# 4. Para predecir nuevas cuentas:
+# nuevas_predicciones = detector.features_df[['NUM_CTA', 'modelo_proba', 'mule_risk_score']]
+
+print("\nSistema de detección de cuentas mulas preparado.")
+print("Para ejecutar, usa: detector, results = run_mule_detection(tu_dataframe)")
