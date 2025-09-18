@@ -1,45 +1,357 @@
-import tkinter as tk
-from PIL import Image, ImageTk
-import cairosvg
-import io
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.chart import XL_CHART_TYPE
+from pptx.chart.data import CategoryChartData, ChartData
+import math
 
-# SVG oficial simplificado de la flama roja de Santander
-santander_svg = """
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <path fill="#DA291C" d="M256 0c-72 0-130 58-130 130 0 72 130 382 130 382s130-310 130-382C386 58 328 0 256 0z"/>
-</svg>
-"""
+# ---------------------------
+# Configuración global/tema
+# ---------------------------
+prs = Presentation()
+prs.slide_width = Inches(13.333)   # ancho estándar 16:9 (960 px equivalentes)
+prs.slide_height = Inches(7.5)
 
-def create_santander_icon(size=256):
-(owl)"""
-(owl)Convierte el SVG de Santander a PNG en memoria con el tamaño dado.
-(owl)"""
-(owl)png_bytes = cairosvg.svg2png(bytestring=santander_svg.encode('utf-8'),
-(owl)(owl)(owl)(owl)(owl)(owl)(owl)(owl) output_width=size, output_height=size)
-(owl)img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-(owl)return img
+THEME = {
+(owl)"bg_color": RGBColor(155, 155, 155),(owl)(owl)# blanco
+(owl)"accent": RGBColor(72, 187, 255),(owl)   # cyan/sky
+(owl)"muted": RGBColor(200, 210, 220),(owl)   # light gray/blue
+(owl)"title": RGBColor(255, 255, 255),(owl)   # white
+(owl)"text": RGBColor(230, 235, 240)(owl)(owl) # off-white
+}
 
-def set_app_icon(root, sizes=(16, 32, 48, 256, 512)):
-(owl)"""
-(owl)Genera iconos en varios tamaños y los asigna a la ventana.
-(owl)Esto asegura que Windows use el icono correcto en taskbar y ALT+TAB.
-(owl)"""
-(owl)icons = []
-(owl)for size in sizes:
-(owl)(owl)img = create_santander_icon(size)
-(owl)(owl)photo = ImageTk.PhotoImage(img)
-(owl)(owl)icons.append(photo)
+TITLE_FONT = "Calibri"
+BODY_FONT = "Calibri"
 
-(owl)# Pasa todos los tamaños a iconphoto
-(owl)root.iconphoto(True, *icons)
-(owl)# Guarda referencias para evitar garbage collection
-(owl)root._icon_photos = icons
+# ---------------------------
+# Helpers de estilo
+# ---------------------------
+def add_background(slide, color=THEME["bg_color"]):
+(owl)"""Agrega un rectángulo que actúa como fondo de la diapositiva."""
+(owl)left, top = 0, 0
+(owl)width, height = prs.slide_width, prs.slide_height
+(owl)bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top, width, height)
+(owl)fill = bg.fill
+(owl)fill.solid()
+(owl)fill.fore_color.rgb = color
+(owl)# quitar contorno
+(owl)bg.line.fill.background()
+(owl)return bg
 
-if __name__ == "__main__":
-(owl)root = tk.Tk()
-(owl)root.title("Icono Santander Profesional")
+def add_logo(slide, path="logo.png", left=Inches(11.6), top=Inches(0.25), height=Inches(0.7)):
+(owl)"""Añade un logo en la esquina superior derecha"""
+(owl)try:
+(owl)(owl)slide.shapes.add_picture(path, left, top, height=height)
+(owl)except Exception:
+(owl)(owl)# si no hay imagen, agregar un marcador visual
+(owl)(owl)logo_box = slide.shapes.add_textbox(left, top, Inches(1.3), height)
+(owl)(owl)tf = logo_box.text_frame
+(owl)(owl)tf.text = "[LOGO]"
+(owl)(owl)tf.paragraphs[0].font.size = Pt(10)
+(owl)(owl)tf.paragraphs[0].font.bold = True
+(owl)(owl)tf.paragraphs[0].font.color.rgb = THEME["muted"]
 
-(owl)set_app_icon(root)  # genera iconos en varios tamaños automáticamente
+def add_slide_title(slide, title_text, subtitle_text=None):
+(owl)"""Agrega un título estilizado con sombra simulada (rectángulo de sombra)"""
+(owl)# shadow (draw first so it's behind)
+(owl)shadow_left, shadow_top = Inches(0.6) + Pt(4).emu/12700, Inches(0.5) + Pt(4).emu/12700
+(owl)# (usamos shapes.add_textbox para title + sombra)
+(owl)sh_shadow = slide.shapes.add_textbox(Inches(0.6)+Inches(0.05), Inches(0.5)+Inches(0.05), Inches(8.5), Inches(1.2))
+(owl)sh_shadow_tf = sh_shadow.text_frame
+(owl)sh_shadow_tf.text = title_text
+(owl)p = sh_shadow_tf.paragraphs[0]
+(owl)p.font.size = Pt(36)
+(owl)p.font.bold = True
+(owl)p.font.name = TITLE_FONT
+(owl)p.font.color.rgb = RGBColor(10, 14, 20)  # sombra oscura
+(owl)# título encima
+(owl)sh = slide.shapes.add_textbox(Inches(0.6), Inches(0.5), Inches(8.5), Inches(1.2))
+(owl)tf = sh.text_frame
+(owl)tf.text = title_text
+(owl)p2 = tf.paragraphs[0]
+(owl)p2.font.size = Pt(36)
+(owl)p2.font.bold = True
+(owl)p2.font.name = TITLE_FONT
+(owl)p2.font.color.rgb = THEME["title"]
 
-(owl)tk.Label(root, text="Ventana con la flama roja oficial de Santander\ny múltiple resolución").pack(padx=20, pady=20)
-(owl)root.mainloop()
+(owl)if subtitle_text:
+(owl)(owl)sub = slide.shapes.add_textbox(Inches(0.6), Inches(1.2), Inches(8.5), Inches(0.8))
+(owl)(owl)stf = sub.text_frame
+(owl)(owl)stf.text = subtitle_text
+(owl)(owl)sp = stf.paragraphs[0]
+(owl)(owl)sp.font.size = Pt(18)
+(owl)(owl)sp.font.italic = True
+(owl)(owl)sp.font.name = BODY_FONT
+(owl)(owl)sp.font.color.rgb = THEME["muted"]
+
+def add_body_text(slide, x, y, w, h, text_lines, bold_first=False):
+(owl)"""Agrega caja de texto con párrafos (lista de lines)."""
+(owl)box = slide.shapes.add_textbox(x, y, w, h)
+(owl)tf = box.text_frame
+(owl)tf.word_wrap = True
+(owl)first = True
+(owl)for line in text_lines:
+(owl)(owl)if first:
+(owl)(owl)(owl)p = tf.paragraphs[0]
+(owl)(owl)(owl)p.text = line
+(owl)(owl)(owl)if bold_first:
+(owl)(owl)(owl)(owl)p.font.bold = True
+(owl)(owl)(owl)p.font.size = Pt(18)
+(owl)(owl)(owl)p.font.color.rgb = THEME["text"]
+(owl)(owl)(owl)p.font.name = BODY_FONT
+(owl)(owl)(owl)first = False
+(owl)(owl)else:
+(owl)(owl)(owl)p = tf.add_paragraph()
+(owl)(owl)(owl)p.text = line
+(owl)(owl)(owl)p.font.size = Pt(14)
+(owl)(owl)(owl)p.font.color.rgb = THEME["muted"]
+(owl)(owl)(owl)p.font.name = BODY_FONT
+(owl)return box
+
+# ---------------------------
+# Slides: contenidos
+# ---------------------------
+
+# 1) Portada
+slide = prs.slides.add_slide(prs.slide_layouts[6])  # layout en blanco
+add_background(slide)
+add_logo(slide, path="logo.png")
+add_slide_title(slide, "Cambio Climático: Retos y Respuestas", "Una visión visual y accionable — Presentación creativa")
+# imagen decorativa grande a la derecha
+try:
+(owl)slide.shapes.add_picture("globe.jpg", Inches(8.8), Inches(1.6), width=Inches(3.8))
+except Exception:
+(owl)pass
+slide.notes_slide.notes_text_frame.text = "Portada: mencionar datos introductorios y objetivo de la charla."
+
+# 2) Índice / esquema
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Contenido", "Esquema de la presentación")
+sections = [
+(owl)"1. ¿Qué es el cambio climático?",
+(owl)"2. Causas principales",
+(owl)"3. Evidencias y efectos",
+(owl)"4. Datos: CO₂ y temperatura",
+(owl)"5. Emisiones por sector",
+(owl)"6. Impactos locales y globales",
+(owl)"7. Soluciones y mitigación",
+(owl)"8. Acciones individuales",
+(owl)"9. Recursos y referencias",
+(owl)"10. Conclusión y llamada a la acción"
+]
+# cuadro lateral con el índice
+add_body_text(slide, Inches(0.6), Inches(1.8), Inches(5.5), Inches(5), sections, bold_first=False)
+slide.notes_slide.notes_text_frame.text = "Usar este slide para guiar la presentación."
+
+# 3) ¿Qué es el cambio climático? (texto + imagen)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "¿Qué es el cambio climático?", "Definición breve y contexto")
+body_lines = [
+(owl)"El cambio climático es la alteración a largo plazo de los patrones meteorológicos y de temperatura.",
+(owl)"Se manifiesta por el aumento de la temperatura media global, alteraciones en precipitaciones y eventos extremos.",
+(owl)"Es impulsado por la acumulación de gases de efecto invernadero producidos por actividades humanas."
+]
+add_body_text(slide, Inches(0.6), Inches(1.9), Inches(6.3), Inches(3.2), body_lines, bold_first=True)
+# imagen decorativa izquierda inferior (iceberg)
+try:
+(owl)slide.shapes.add_picture("iceberg.jpg", Inches(7.2), Inches(2.0), width=Inches(4.0))
+except Exception:
+(owl)pass
+slide.notes_slide.notes_text_frame.text = "Definición: enfatizar que cambios son a largo plazo."
+
+# 4) Causas principales (formas + iconos)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Causas principales", "Fuentes de gases de efecto invernadero")
+causes = [
+(owl)("Combustibles fósiles", "Extracción y quema de carbón, petróleo y gas."),
+(owl)("Deforestación", "Pérdida de sumideros de carbono y emisiones por quema."),
+(owl)("Agricultura", "Metano y óxidos de nitrógeno procedentes de ganado y fertilizantes."),
+(owl)("Transporte", "Vehículos que consumen combustibles fósiles.")
+]
+# crear tarjetas (shapes) con sombra simulada
+card_left = Inches(0.7)
+card_top = Inches(1.9)
+card_w = Inches(5.8)
+card_h = Inches(0.9)
+for i, (title, desc) in enumerate(causes):
+(owl)top = card_top + i * Inches(1.05)
+(owl)# sombra (recta)
+(owl)sh = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, card_left+Inches(0.04), top+Inches(0.04), card_w, card_h)
+(owl)sh.fill.solid()
+(owl)sh.fill.fore_color.rgb = RGBColor(10, 16, 28)
+(owl)sh.line.fill.background()
+(owl)# tarjeta principal
+(owl)card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, card_left, top, card_w, card_h)
+(owl)card.fill.solid()
+(owl)card.fill.fore_color.rgb = RGBColor(30, 54, 85)
+(owl)card.line.color.rgb = THEME["accent"]
+(owl)# texto dentro
+(owl)tx = card.text_frame
+(owl)tx.text = title
+(owl)p0 = tx.paragraphs[0]
+(owl)p0.font.size = Pt(16)
+(owl)p0.font.bold = True
+(owl)p0.font.color.rgb = THEME["accent"]
+(owl)p0.font.name = BODY_FONT
+(owl)p1 = tx.add_paragraph()
+(owl)p1.text = desc
+(owl)p1.font.size = Pt(12)
+(owl)p1.font.color.rgb = THEME["muted"]
+(owl)p1.font.name = BODY_FONT
+slide.notes_slide.notes_text_frame.text = "Explicar cada causa con ejemplos locales."
+
+# 5) Gráfica: Temperatura global (línea)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Evolución de la temperatura media global", "Temperatura (anomalía respecto a 1951-1980)")
+# Datos de ejemplo (años y anomalías) - sustituir por datos reales al compartir
+years = list(range(1980, 2021, 5))
+anomalies = [0.12, 0.21, 0.26, 0.36, 0.44, 0.56, 0.65, 0.74, 0.92]  # valores ejemplo
+chart_data = CategoryChartData()
+chart_data.categories = [str(y) for y in years]
+chart_data.add_series("Anomalía (°C)", tuple(anomalies))
+chart = slide.shapes.add_chart(
+(owl)XL_CHART_TYPE.LINE_MARKERS, Inches(0.7), Inches(1.8), Inches(11), Inches(4.2), chart_data
+).chart
+# estilizar ejes (limitado en python-pptx)
+slide.notes_slide.notes_text_frame.text = "Comentar tendencia ascendente y eventos de calor extremo."
+
+# 6) Gráfica: Emisiones por sector (pie)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Emisiones globales por sector", "Proporción anual aproximada")
+pie_data = ChartData()
+pie_data.categories = ["Energía", "Agricultura", "Transporte", "Industria", "Edificios", "Otros"]
+pie_values = (42.0, 14.0, 16.0, 10.0, 9.0, 9.0)
+pie_data.add_series("Emisiones (%)", pie_values)
+chart = slide.shapes.add_chart(XL_CHART_TYPE.PIE, Inches(1.2), Inches(1.8), Inches(6), Inches(4), pie_data).chart
+# leyenda a la derecha: cuadro con colores y textos
+legend_box = slide.shapes.add_textbox(Inches(7.4), Inches(2.2), Inches(4.0), Inches(3.2))
+ltf = legend_box.text_frame
+for cat, val in zip(pie_data.categories, pie_values):
+(owl)p = ltf.add_paragraph()
+(owl)p.text = f"{cat}: {val}%"
+(owl)p.font.size = Pt(14)
+(owl)p.font.color.rgb = THEME["muted"]
+(owl)p.font.name = BODY_FONT
+slide.notes_slide.notes_text_frame.text = "Resaltar sectores prioritarios para mitigación."
+
+# 7) Datos: CO2 atmosférico (barras) y tarjeta con cifra clave
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "CO₂ atmosférico: concentración reciente", "Partes por millón (ppm) — datos de ejemplo")
+years2 = [2015, 2016, 2017, 2018, 2019, 2020, 2021]
+co2 = [400.8, 404.2, 406.5, 409.1, 411.4, 412.5, 414.2]  # ejemplo
+data = CategoryChartData()
+data.categories = [str(y) for y in years2]
+data.add_series("CO₂ (ppm)", tuple(co2))
+chart = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.7), Inches(1.9), Inches(7.6), Inches(4.0), data).chart
+# tarjeta con cifra clave
+card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(8.6), Inches(2.6), Inches(3.0), Inches(1.6))
+card.fill.solid()
+card.fill.fore_color.rgb = THEME["accent"]
+card.line.fill.background()
+tf = card.text_frame
+tf.text = "Cifra clave"
+p = tf.paragraphs[0]
+p.font.size = Pt(12)
+p.font.bold = True
+p.font.color.rgb = RGBColor(10, 10, 10)
+p2 = tf.add_paragraph()
+p2.text = "Concentración CO₂ reciente: \n≈ 414 ppm"
+p2.font.size = Pt(18)
+p2.font.bold = True
+p2.font.color.rgb = RGBColor(10, 10, 10)
+slide.notes_slide.notes_text_frame.text = "Explicar relación entre ppm y efectos climáticos."
+
+# 8) Impactos (imágenes + texto)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Evidencias y impactos", "Eventos extremos: incendios, sequías, pérdida de hielo")
+# tres imágenes / iconos horizontales con captions
+img_w = Inches(3.0)
+lefts = [Inches(0.8), Inches(4.8), Inches(8.8)]
+imgs = ["wildfire.jpg", "globe.jpg", "iceberg.jpg"]
+captions = ["Incendios forestales (más intensos)", "Olas de calor y olas de calor marinas", "Retroceso de glaciares y hielo marino"]
+for i, (img, left) in enumerate(zip(imgs, lefts)):
+(owl)try:
+(owl)(owl)slide.shapes.add_picture(img, left, Inches(2.0), width=img_w)
+(owl)except Exception:
+(owl)(owl)# fallback: añadir caja con texto si no hay imagen
+(owl)(owl)fallback = slide.shapes.add_textbox(left, Inches(2.0), img_w, Inches(1.8))
+(owl)(owl)fallback.text_frame.text = "[imagen]"
+(owl)cap = slide.shapes.add_textbox(left, Inches(4.1), img_w, Inches(1.0))
+(owl)t = cap.text_frame.paragraphs[0]
+(owl)t.text = captions[i]
+(owl)t.font.size = Pt(12)
+(owl)t.font.color.rgb = THEME["muted"]
+slide.notes_slide.notes_text_frame.text = "Mostrar ejemplos locales si es posible."
+
+# 9) Soluciones y mitigación (lista + íconos/formas)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Soluciones: Mitigación y adaptación", "Acciones a nivel global y local")
+solutions = [
+(owl)("Energía renovable", "Despliegue de solar, eólica y almacenamiento."),
+(owl)("Eficiencia", "Edificios y procesos industriales más eficientes."),
+(owl)("Naturaleza", "Reforestación y conservación de ecosistemas."),
+(owl)("Transporte", "Electrificación y transporte público limpio."),
+(owl)("Políticas", "Precios de carbono, regulaciones y acuerdos internacionales.")
+]
+# dibujar un "infográfico" vertical con círculos conectados
+cx = Inches(1.0)
+top = Inches(1.7)
+for i, (title, desc) in enumerate(solutions):
+(owl)y = top + i * Inches(1.0)
+(owl)# círculo de color
+(owl)c = slide.shapes.add_shape(MSO_SHAPE.OVAL, cx, y, Inches(0.5), Inches(0.5))
+(owl)c.fill.solid()
+(owl)c.fill.fore_color.rgb = THEME["accent"]
+(owl)c.line.fill.background()
+(owl)# texto al lado
+(owl)tx = slide.shapes.add_textbox(cx + Inches(0.7), y - Inches(0.05), Inches(9.0), Inches(0.8))
+(owl)t = tx.text_frame
+(owl)t.text = title + " — " + desc
+(owl)p = t.paragraphs[0]
+(owl)p.font.size = Pt(14)
+(owl)p.font.bold = True
+(owl)p.font.color.rgb = THEME["text"]
+(owl)p.font.name = BODY_FONT
+slide.notes_slide.notes_text_frame.text = "Enfatizar cómo las soluciones se conectan."
+
+# 10) Conclusión y llamada a la acción (contacto + referencias)
+slide = prs.slides.add_slide(prs.slide_layouts[6])
+add_background(slide)
+add_logo(slide)
+add_slide_title(slide, "Conclusión y llamada a la acción", "¿Qué podemos hacer hoy?")
+conclude_lines = [
+(owl)"El cambio climático es una realidad demostrada por múltiples líneas de evidencia.",
+(owl)"Requiere acciones coordinadas: políticas, inversión y cambios en comportamiento.",
+(owl)"Acciones individuales suman: transporte, consumo energético, dieta y participación cívica.",
+(owl)"",
+(owl)"Recursos:",
+(owl)"- IPCC reports, NOAA, NASA (reemplazar con URLs locales o institucionales).",
+(owl)"Contacto: tu.nombre@ejemplo.com"
+]
+add_body_text(slide, Inches(0.6), Inches(1.9), Inches(11.5), Inches(4.6), conclude_lines, bold_first=True)
+slide.notes_slide.notes_text_frame.text = "Cerrar con preguntas y próximos pasos."
+
+# ---------------------------
+# Ajustes finales y guardado
+# ---------------------------
+output_file = "climate_complete.pptx"
+prs.save(output_file)
+print(f"Presentación creada: {output_file}")
