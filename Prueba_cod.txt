@@ -1,42 +1,8 @@
-@{
-  replace(
-    replace(
-      replace(
-        string(body('bodySPO')),
-        '[',
-        concat(
-          '--changeset_', outputs('changesetUID'),
-          decodeUriComponent('%0D%0A'),
-          'Content-Type: application/http',
-          decodeUriComponent('%0D%0A'),
-          'Content-Transfer-Encoding: binary',
-          decodeUriComponent('%0D%0A'),
-          decodeUriComponent('%0D%0A'),
-          'POST https://santandernet.sharepoint.com/sites/SAETA/_api/web/lists/getByTitle(''DigiChequesS'')/items HTTP/1.1',
-          decodeUriComponent('%0D%0A'),
-          'Content-Type: application/json;odata=verbose',
-          decodeUriComponent('%0D%0A'),
-          decodeUriComponent('%0D%0A')
-        )
-      ),
-      ']',
-      ''
-    ),
-    '},',
-    concat(
-      decodeUriComponent('%0D%0A'),
-      '--changeset_', outputs('changesetUID'),
-      decodeUriComponent('%0D%0A'),
-      'Content-Type: application/http',
-      decodeUriComponent('%0D%0A'),
-      'Content-Transfer-Encoding: binary',
-      decodeUriComponent('%0D%0A'),
-      decodeUriComponent('%0D%0A'),
-      'POST https://santandernet.sharepoint.com/sites/SAETA/_api/web/lists/getByTitle(''DigiChequesS'')/items HTTP/1.1',
-      decodeUriComponent('%0D%0A'),
-      'Content-Type: application/json;odata=verbose',
-      decodeUriComponent('%0D%0A'),
-      decodeUriComponent('%0D%0A')
-    )
-  )
-}
+concat(
+'--batch_', outputs('batchGUID'), decodeUriComponent('%0A'),
+'Content-Type: multipart/mixed; boundary="changeset_', outputs('changesetUID'), '"', decodeUriComponent('%0A%0A'),
+outputs('redactarEspacios'),
+decodeUriComponent('%0A'),
+'--changeset_', outputs('changesetUID'), '--', decodeUriComponent('%0A'),
+'--batch_', outputs('batchGUID'), '--'
+)
