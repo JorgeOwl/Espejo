@@ -1,33 +1,42 @@
 @{
-  join(
-    map(
-      body('bodySPO'),
-      concat(
-        '--changeset_', outputs('changesetUID'),
-        decodeUriComponent('%0D%0A'),
-        'Content-Type: application/http',
-        decodeUriComponent('%0D%0A'),
-        'Content-Transfer-Encoding: binary',
-        decodeUriComponent('%0D%0A'),
-        decodeUriComponent('%0D%0A'),
-        'POST https://santandernet.sharepoint.com/sites/SAETA/_api/web/lists/getByTitle(''DigiChequesS'')/items HTTP/1.1',
-        decodeUriComponent('%0D%0A'),
-        'Content-Type: application/json;odata=verbose',
-        decodeUriComponent('%0D%0A'),
-        decodeUriComponent('%0D%0A'),
-        string(item())
-      )
+  replace(
+    replace(
+      replace(
+        string(body('bodySPO')),
+        '[',
+        concat(
+          '--changeset_', outputs('changesetUID'),
+          decodeUriComponent('%0D%0A'),
+          'Content-Type: application/http',
+          decodeUriComponent('%0D%0A'),
+          'Content-Transfer-Encoding: binary',
+          decodeUriComponent('%0D%0A'),
+          decodeUriComponent('%0D%0A'),
+          'POST https://santandernet.sharepoint.com/sites/SAETA/_api/web/lists/getByTitle(''DigiChequesS'')/items HTTP/1.1',
+          decodeUriComponent('%0D%0A'),
+          'Content-Type: application/json;odata=verbose',
+          decodeUriComponent('%0D%0A'),
+          decodeUriComponent('%0D%0A')
+        )
+      ),
+      ']',
+      ''
     ),
-    decodeUriComponent('%0D%0A')
+    '},',
+    concat(
+      decodeUriComponent('%0D%0A'),
+      '--changeset_', outputs('changesetUID'),
+      decodeUriComponent('%0D%0A'),
+      'Content-Type: application/http',
+      decodeUriComponent('%0D%0A'),
+      'Content-Transfer-Encoding: binary',
+      decodeUriComponent('%0D%0A'),
+      decodeUriComponent('%0D%0A'),
+      'POST https://santandernet.sharepoint.com/sites/SAETA/_api/web/lists/getByTitle(''DigiChequesS'')/items HTTP/1.1',
+      decodeUriComponent('%0D%0A'),
+      'Content-Type: application/json;odata=verbose',
+      decodeUriComponent('%0D%0A'),
+      decodeUriComponent('%0D%0A')
+    )
   )
 }
-
-
---batch_@{outputs('batchGUID')}
-Content-Type: multipart/mixed; boundary="changeset_@{outputs('changesetUID')}"
-
-@{outputs('CrearBatchItems')}
-
---changeset_@{outputs('changesetUID')}--
-
---batch_@{outputs('batchGUID')}--
