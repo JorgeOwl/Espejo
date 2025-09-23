@@ -1,8 +1,2 @@
---batch_@{outputs('batchGUID')}
-Content-Type: multipart/mixed; boundary="changeset_@{outputs('changesetUID')}"
-
-@{outputs('CrearBatchItems')}
-
---changeset_@{outputs('changesetUID')}--
-
---batch_@{outputs('batchGUID')}--
+Content-Type: multipart/mixed; boundary="batch_@{outputs('batchGUID')}"
+  X-RequestDigest: @{outputs('digest')}
