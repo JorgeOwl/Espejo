@@ -1,25 +1,11 @@
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
-import numpy as np
+🔗 Mirror 1
 
-model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+https://hf-mirror.com/cardiffnlp/twitter-xlm-roberta-base-sentiment
 
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
+🔗 Mirror 2
 
-def analizar_sentimiento(texto):
-    inputs = tokenizer(texto, return_tensors="pt", truncation=True)
-    outputs = model(**inputs)
-    scores = outputs.logits[0].detach().numpy()
-    scores = torch.softmax(torch.tensor(scores), dim=0).numpy()
+https://huggingface.co.cn/cardiffnlp/twitter-xlm-roberta-base-sentiment
 
-    etiquetas = ["Negativo", "Neutral", "Positivo"]
+🔗 Mirror 3
 
-    sentimiento = etiquetas[np.argmax(scores)]
-    return sentimiento, dict(zip(etiquetas, scores))
-
-texto = "No me gustó nada este servicio."
-sentimiento, probabilidades = analizar_sentimiento(texto)
-
-print("Sentimiento:", sentimiento)
-print("Probabilidades:", probabilidades)
+https://modelscope.cn/models/cardiffnlp/twitter-xlm-roberta-base-sentiment
