@@ -1,8 +1,0 @@
-concat(
-'--batch_', outputs('batchGUID'), decodeUriComponent('%0A'),
-'Content-Type: multipart/mixed; boundary="changeset_', outputs('changesetUID'), '"', decodeUriComponent('%0A%0A'),
-outputs('redactarEspacios'),
-decodeUriComponent('%0A'),
-'--changeset_', outputs('changesetUID'), '--', decodeUriComponent('%0A'),
-'--batch_', outputs('batchGUID'), '--'
-)
