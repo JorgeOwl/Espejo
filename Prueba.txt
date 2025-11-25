@@ -1,55 +1,25 @@
-import pyaudio
-import wave
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+import numpy as np
 
-def grabar_audio(nombre_archivo="grabacion.wav", duracion=5):
-    """
-    Graba audio y lo guarda en formato WAV
-    
-    Args:
-        nombre_archivo: Nombre del archivo de salida (por defecto: grabacion.wav)
-        duracion: Duración de la grabación en segundos (por defecto: 5)
-    """
-    # Configuración de parámetros
-    CHUNK = 1024  # Tamaño del buffer
-    FORMAT = pyaudio.paInt16  # Formato de audio (16 bits)
-    CHANNELS = 2  # Estéreo (usa 1 para mono)
-    RATE = 44100  # Frecuencia de muestreo (44.1 kHz)
-    
-    # Inicializar PyAudio
-    audio = pyaudio.PyAudio()
-    
-    # Abrir stream de audio
-    stream = audio.open(format=FORMAT,
-                       channels=CHANNELS,
-                       rate=RATE,
-                       input=True,
-                       frames_per_buffer=CHUNK)
-    
-    print(f"Grabando durante {duracion} segundos...")
-    
-    frames = []
-    
-    # Grabar audio
-    for i in range(0, int(RATE / CHUNK * duracion)):
-        data = stream.read(CHUNK)
-        frames.append(data)
-    
-    print("Grabación finalizada.")
-    
-    # Detener y cerrar el stream
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-    
-    # Guardar el audio en archivo WAV
-    with wave.open(nombre_archivo, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(audio.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
-    
-    print(f"Audio guardado en: {nombre_archivo}")
+model_name = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
 
-if __name__ == "__main__":
-    # Ejemplo de uso
-    grabar_audio("mi_grabacion.wav", duracion=5)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForSequenceClassification.from_pretrained(model_name)
+
+def analizar_sentimiento(texto):
+    inputs = tokenizer(texto, return_tensors="pt", truncation=True)
+    outputs = model(**inputs)
+    scores = outputs.logits[0].detach().numpy()
+    scores = torch.softmax(torch.tensor(scores), dim=0).numpy()
+
+    etiquetas = ["Negativo", "Neutral", "Positivo"]
+
+    sentimiento = etiquetas[np.argmax(scores)]
+    return sentimiento, dict(zip(etiquetas, scores))
+
+texto = "No me gustó nada este servicio."
+sentimiento, probabilidades = analizar_sentimiento(texto)
+
+print("Sentimiento:", sentimiento)
+print("Probabilidades:", probabilidades)
